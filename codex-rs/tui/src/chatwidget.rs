@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use codex_core::config::Config;
+use codex_core::git_info;
 use codex_core::protocol::AgentMessageDeltaEvent;
 use codex_core::protocol::AgentMessageEvent;
 use codex_core::protocol::AgentReasoningDeltaEvent;
@@ -19,6 +20,7 @@ use codex_core::protocol::ExecApprovalRequestEvent;
 use codex_core::protocol::ExecCommandBeginEvent;
 use codex_core::protocol::ExecCommandEndEvent;
 use codex_core::protocol::InputItem;
+use codex_core::protocol::ListCustomPromptsResponseEvent;
 use codex_core::protocol::McpListToolsResponseEvent;
 use codex_core::protocol::McpToolCallBeginEvent;
 use codex_core::protocol::McpToolCallEndEvent;
@@ -30,6 +32,7 @@ use codex_core::protocol::TokenUsage;
 use codex_core::protocol::TurnAbortReason;
 use codex_core::protocol::TurnDiffEvent;
 use codex_core::protocol::WebSearchBeginEvent;
+use codex_core::protocol::WebSearchEndEvent;
 use codex_protocol::parse_command::ParsedCommand;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -153,6 +156,8 @@ impl ChatWidget {
             event,
             self.show_welcome_banner,
         ));
+        // Ask codex-core to enumerate custom prompts for this session.
+        self.submit_op(Op::ListCustomPrompts);
         if let Some(user_message) = self.initial_user_message.take() {
             self.submit_user_message(user_message);
         }
@@ -355,9 +360,16 @@ impl ChatWidget {
         self.defer_or_handle(|q| q.push_mcp_end(ev), |s| s.handle_mcp_end_now(ev2));
     }
 
-    fn on_web_search_begin(&mut self, ev: WebSearchBeginEvent) {
+    fn on_web_search_begin(&mut self, _ev: WebSearchBeginEvent) {
         self.flush_answer_stream_with_separator();
-        self.add_to_history(history_cell::new_web_search_call(ev.query));
+    }
+
+    fn on_web_search_end(&mut self, ev: WebSearchEndEvent) {
+        self.flush_answer_stream_with_separator();
+        self.add_to_history(history_cell::new_web_search_call(format!(
+            "Searched: {}",
+            ev.query
+        )));
     }
 
     fn on_get_history_entry_response(
@@ -594,7 +606,7 @@ impl ChatWidget {
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
         let codex_op_tx = spawn_agent(config.clone(), app_event_tx.clone(), conversation_manager);
 
-        Self {
+        let widget = Self {
             app_event_tx: app_event_tx.clone(),
             frame_requester: frame_requester.clone(),
             codex_op_tx,
@@ -604,6 +616,7 @@ impl ChatWidget {
                 has_input_focus: true,
                 enhanced_keys_supported,
                 placeholder_text: placeholder,
+                disable_paste_burst: config.disable_paste_burst,
             }),
             active_exec_cell: None,
             config: config.clone(),
@@ -624,7 +637,11 @@ impl ChatWidget {
             last_history_was_exec: false,
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: true,
-        }
+        };
+
+        // Update repository information for status display asynchronously
+        widget.spawn_repo_info_task();
+        widget
     }
 
     /// Create a ChatWidget attached to an existing conversation (e.g., a fork).
@@ -642,7 +659,7 @@ impl ChatWidget {
         let codex_op_tx =
             spawn_agent_from_existing(conversation, session_configured, app_event_tx.clone());
 
-        Self {
+        let widget = Self {
             app_event_tx: app_event_tx.clone(),
             frame_requester: frame_requester.clone(),
             codex_op_tx,
@@ -652,6 +669,7 @@ impl ChatWidget {
                 has_input_focus: true,
                 enhanced_keys_supported,
                 placeholder_text: placeholder,
+                disable_paste_burst: config.disable_paste_burst,
             }),
             active_exec_cell: None,
             config: config.clone(),
@@ -669,7 +687,11 @@ impl ChatWidget {
             last_history_was_exec: false,
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: false,
-        }
+        };
+
+        // Update repository information for status display asynchronously
+        widget.spawn_repo_info_task();
+        widget
     }
 
     pub fn desired_height(&self, width: u16) -> u16 {
@@ -787,6 +809,9 @@ impl ChatWidget {
                 }
                 self.app_event_tx.send(AppEvent::ExitRequest);
             }
+            SlashCommand::Sessions => {
+                self.open_sessions_popup();
+            }
             SlashCommand::Diff => {
                 self.add_diff_in_progress();
                 let tx = self.app_event_tx.clone();
@@ -809,6 +834,9 @@ impl ChatWidget {
             }
             SlashCommand::Status => {
                 self.add_status_output();
+            }
+            SlashCommand::Usage => {
+                self.add_usage_output();
             }
             SlashCommand::Mcp => {
                 self.add_mcp_output();
@@ -856,6 +884,68 @@ impl ChatWidget {
 
     pub(crate) fn handle_paste(&mut self, text: String) {
         self.bottom_pane.handle_paste(text);
+    }
+
+    fn open_sessions_popup(&mut self) {
+        let sessions = match codex_core::sessions::list_sessions(&self.config) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("failed to list sessions: {e}");
+                Vec::new()
+            }
+        };
+        let mut items: Vec<crate::bottom_pane::SelectionItem> = Vec::new();
+        for s in sessions {
+            let title = s.title.clone().unwrap_or_else(|| "(no title)".to_string());
+            let desc = Some(format!(
+                "created: {}   last: {}",
+                s.created,
+                s.last_active.unwrap_or_else(|| "unknown".to_string())
+            ));
+            let path = s.path.clone();
+            let id = s.id;
+            let actions: Vec<crate::bottom_pane::SelectionAction> = vec![Box::new(move |tx| {
+                tracing::info!("resume selected session: {id}");
+                tx.send(crate::app_event::AppEvent::ResumeSession(path.clone()));
+            })];
+            items.push(crate::bottom_pane::SelectionItem {
+                name: format!("{title} — {id}"),
+                description: desc,
+                is_current: false,
+                actions,
+            });
+        }
+        if items.is_empty() {
+            items.push(crate::bottom_pane::SelectionItem {
+                name: "No saved sessions".to_string(),
+                description: None,
+                is_current: true,
+                actions: vec![],
+            });
+        }
+        self.bottom_pane.show_selection_view(
+            "Sessions".to_string(),
+            Some("Select a session to resume".to_string()),
+            Some("Up/Down to navigate; Enter to resume; Esc to cancel".to_string()),
+            items,
+        );
+    }
+    // Returns true if caller should skip rendering this frame (a future frame is scheduled).
+    pub(crate) fn handle_paste_burst_tick(&mut self, frame_requester: FrameRequester) -> bool {
+        if self.bottom_pane.flush_paste_burst_if_due() {
+            // A paste just flushed; request an immediate redraw and skip this frame.
+            self.request_redraw();
+            true
+        } else if self.bottom_pane.is_in_paste_burst() {
+            // While capturing a burst, schedule a follow-up tick and skip this frame
+            // to avoid redundant renders between ticks.
+            frame_requester.schedule_frame_in(
+                crate::bottom_pane::ChatComposer::recommended_paste_flush_delay(),
+            );
+            true
+        } else {
+            false
+        }
     }
 
     fn flush_active_exec_cell(&mut self) {
@@ -969,8 +1059,10 @@ impl ChatWidget {
             EventMsg::McpToolCallBegin(ev) => self.on_mcp_tool_call_begin(ev),
             EventMsg::McpToolCallEnd(ev) => self.on_mcp_tool_call_end(ev),
             EventMsg::WebSearchBegin(ev) => self.on_web_search_begin(ev),
+            EventMsg::WebSearchEnd(ev) => self.on_web_search_end(ev),
             EventMsg::GetHistoryEntryResponse(ev) => self.on_get_history_entry_response(ev),
             EventMsg::McpListToolsResponse(ev) => self.on_list_mcp_tools(ev),
+            EventMsg::ListCustomPromptsResponse(ev) => self.on_list_custom_prompts(ev),
             EventMsg::ShutdownComplete => self.on_shutdown_complete(),
             EventMsg::TurnDiff(TurnDiffEvent { unified_diff }) => self.on_turn_diff(unified_diff),
             EventMsg::BackgroundEvent(BackgroundEventEvent { message }) => {
@@ -1035,6 +1127,10 @@ impl ChatWidget {
             &self.total_token_usage,
             &self.session_id,
         ));
+    }
+
+    pub(crate) fn add_usage_output(&mut self) {
+        self.add_to_history(history_cell::new_usage_output(&self.config));
     }
 
     /// Open a popup to choose the model preset (model + reasoning effort).
@@ -1200,6 +1296,13 @@ impl ChatWidget {
         self.add_to_history(history_cell::new_mcp_tools_output(&self.config, ev.tools));
     }
 
+    fn on_list_custom_prompts(&mut self, ev: ListCustomPromptsResponseEvent) {
+        let len = ev.custom_prompts.len();
+        debug!("received {len} custom prompts");
+        // Forward to bottom pane so the slash popup can show them now.
+        self.bottom_pane.set_custom_prompts(ev.custom_prompts);
+    }
+
     /// Programmatically submit a user text message as if typed in the
     /// composer. The text will be added to conversation history and sent to
     /// the agent.
@@ -1222,6 +1325,36 @@ impl ChatWidget {
     /// runtime overrides applied via TUI, e.g., model or approval policy).
     pub(crate) fn config_ref(&self) -> &Config {
         &self.config
+    }
+
+    /// Spawn a background task to collect repo/branch and post an AppEvent.
+    pub(crate) fn spawn_repo_info_task(&self) {
+        let cwd = self.config.cwd.clone();
+        let tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let info = git_info::collect_git_info(&cwd).await;
+            if let Some(info) = info {
+                let repo_name = git_info::extract_repo_name(&cwd);
+                tx.send(crate::app_event::AppEvent::UpdateRepoInfo {
+                    repo_name: Some(repo_name),
+                    git_branch: info.branch,
+                });
+            } else {
+                tx.send(crate::app_event::AppEvent::UpdateRepoInfo {
+                    repo_name: None,
+                    git_branch: None,
+                });
+            }
+        });
+    }
+
+    /// Apply repository info to the UI.
+    pub(crate) fn apply_repo_info(
+        &mut self,
+        repo_name: Option<String>,
+        git_branch: Option<String>,
+    ) {
+        self.bottom_pane.set_repo_info(repo_name, git_branch);
     }
 
     pub(crate) fn clear_token_usage(&mut self) {

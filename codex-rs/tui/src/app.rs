@@ -133,6 +133,12 @@ impl App {
                     self.chat_widget.handle_paste(pasted);
                 }
                 TuiEvent::Draw => {
+                    if self
+                        .chat_widget
+                        .handle_paste_burst_tick(tui.frame_requester())
+                    {
+                        return Ok(true);
+                    }
                     tui.draw(
                         self.chat_widget.desired_height(tui.terminal.size()?.width),
                         |frame| {
@@ -160,6 +166,25 @@ impl App {
     async fn handle_event(&mut self, tui: &mut tui::Tui, event: AppEvent) -> Result<bool> {
         match event {
             AppEvent::NewSession => {
+                self.chat_widget = ChatWidget::new(
+                    self.config.clone(),
+                    self.server.clone(),
+                    tui.frame_requester(),
+                    self.app_event_tx.clone(),
+                    None,
+                    Vec::new(),
+                    self.enhanced_keys_supported,
+                );
+                tui.frame_requester().schedule_frame();
+            }
+            AppEvent::UpdateRepoInfo {
+                repo_name,
+                git_branch,
+            } => {
+                self.chat_widget.apply_repo_info(repo_name, git_branch);
+            }
+            AppEvent::ResumeSession(path) => {
+                self.config.experimental_resume = Some(path);
                 self.chat_widget = ChatWidget::new(
                     self.config.clone(),
                     self.server.clone(),
