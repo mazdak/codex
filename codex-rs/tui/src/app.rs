@@ -582,6 +582,13 @@ impl App {
                 // Leaving alt-screen may blank the inline viewport; force a redraw either way.
                 tui.frame_requester().schedule_frame();
             }
+            AppEvent::UpdateRepoInfo {
+                repo_name,
+                git_branch,
+            } => {
+                self.chat_widget.apply_repo_info(repo_name, git_branch);
+            }
+
             AppEvent::InsertHistoryCell(cell) => {
                 let cell: Arc<dyn HistoryCell> = cell.into();
                 if let Some(Overlay::Transcript(t)) = &mut self.overlay {
