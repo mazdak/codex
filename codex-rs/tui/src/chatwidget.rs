@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use codex_core::config::Config;
-use codex_core::config::types::Notifications;
+use codex_core::config_types::Notifications;
+use codex_core::git_info;
 use codex_core::git_info::current_branch_name;
 use codex_core::git_info::local_git_branches;
 use codex_core::project_doc::DEFAULT_PROJECT_DOC_FILENAME;
@@ -479,16 +480,23 @@ impl ChatWidget {
     }
 
     pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {
-        if let Some(info) = info {
-            let context_window = info
-                .model_context_window
-                .or(self.config.model_context_window);
-            let percent = context_window.map(|window| {
-                info.last_token_usage
-                    .percent_of_context_window_remaining(window)
-            });
-            self.bottom_pane.set_context_window_percent(percent);
-            self.token_info = Some(info);
+        self.bottom_pane.set_token_usage_info(info.clone());
+        match info {
+            Some(info) => {
+                let context_window = info
+                    .model_context_window
+                    .or(self.config.model_context_window);
+                let percent = context_window.map(|window| {
+                    info.last_token_usage
+                        .percent_of_context_window_remaining(window)
+                });
+                self.bottom_pane.set_context_window_percent(percent);
+                self.token_info = Some(info);
+            }
+            None => {
+                self.bottom_pane.set_context_window_percent(None);
+                self.token_info = None;
+            }
         }
     }
 
@@ -1013,7 +1021,7 @@ impl ChatWidget {
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
         let codex_op_tx = spawn_agent(config.clone(), app_event_tx.clone(), conversation_manager);
 
-        Self {
+        let widget = Self {
             app_event_tx: app_event_tx.clone(),
             frame_requester: frame_requester.clone(),
             codex_op_tx,
@@ -1056,6 +1064,11 @@ impl ChatWidget {
             feedback,
             current_rollout_path: None,
         }
+        };
+
+        // Update repository information for status display asynchronously
+        widget.spawn_repo_info_task();
+        widget
     }
 
     /// Create a ChatWidget attached to an existing conversation (e.g., a fork).
@@ -1080,7 +1093,7 @@ impl ChatWidget {
         let codex_op_tx =
             spawn_agent_from_existing(conversation, session_configured, app_event_tx.clone());
 
-        Self {
+        let widget = Self {
             app_event_tx: app_event_tx.clone(),
             frame_requester: frame_requester.clone(),
             codex_op_tx,
@@ -1123,6 +1136,11 @@ impl ChatWidget {
             feedback,
             current_rollout_path: None,
         }
+        };
+
+        // Update repository information for status display asynchronously
+        widget.spawn_repo_info_task();
+        widget
     }
 
     pub(crate) fn handle_key_event(&mut self, key_event: KeyEvent) {
@@ -2612,8 +2630,38 @@ impl ChatWidget {
         &self.config
     }
 
+    /// Spawn a background task to collect repo/branch and post an AppEvent.
+    pub(crate) fn spawn_repo_info_task(&self) {
+        let cwd = self.config.cwd.clone();
+        let tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let info = git_info::collect_git_info(&cwd).await;
+            if let Some(info) = info {
+                let repo_name = git_info::extract_repo_name(&cwd);
+                tx.send(crate::app_event::AppEvent::UpdateRepoInfo {
+                    repo_name: Some(repo_name),
+                    git_branch: info.branch,
+                });
+            } else {
+                tx.send(crate::app_event::AppEvent::UpdateRepoInfo {
+                    repo_name: None,
+                    git_branch: None,
+                });
+            }
+        });
+    }
+
+    /// Apply repository info to the UI.
+    pub(crate) fn apply_repo_info(
+        &mut self,
+        repo_name: Option<String>,
+        git_branch: Option<String>,
+    ) {
+        self.bottom_pane.set_repo_info(repo_name, git_branch);
+    }
+
     pub(crate) fn clear_token_usage(&mut self) {
-        self.token_info = None;
+        self.set_token_info(None);
     }
 
     fn as_renderable(&self) -> RenderableItem<'_> {

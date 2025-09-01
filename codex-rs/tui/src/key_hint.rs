@@ -5,6 +5,7 @@ use crossterm::event::KeyModifiers;
 use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Span;
+use std::fmt::Display;
 
 #[cfg(test)]
 const ALT_PREFIX: &str = "⌥ + ";
@@ -88,4 +89,12 @@ impl From<&KeyBinding> for Span<'static> {
 
 fn key_hint_style() -> Style {
     Style::default().dim()
+}
+
+pub(crate) fn plain_span(key: impl Display) -> Span<'static> {
+    Span::styled(format!("{key}"), key_hint_style())
+}
+
+pub(crate) fn ctrl_span(key: impl Display) -> Span<'static> {
+    Span::styled(format!("{CTRL_PREFIX}{key}"), key_hint_style())
 }
