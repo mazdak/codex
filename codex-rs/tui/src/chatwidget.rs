@@ -195,6 +195,11 @@ use crate::render::renderable::RenderableExt;
 use crate::render::renderable::RenderableItem;
 use crate::slash_command::SlashCommand;
 use crate::status::RateLimitSnapshotDisplay;
+use crate::status_line::StatusLineContextUsage;
+use crate::status_line::StatusLineContextWindow;
+use crate::status_line::StatusLineInput;
+use crate::status_line::StatusLineInputArgs;
+use crate::status_line::StatusLineManager;
 use crate::text_formatting::truncate_text;
 use crate::tui::FrameRequester;
 mod interrupts;
@@ -216,6 +221,7 @@ use crate::streaming::controller::PlanStreamController;
 use crate::streaming::controller::StreamController;
 
 use chrono::Local;
+use codex_ansi_escape::ansi_escape_line;
 use codex_common::approval_presets::ApprovalPreset;
 use codex_common::approval_presets::builtin_approval_presets;
 use codex_core::AuthManager;
@@ -542,6 +548,7 @@ pub(crate) struct ChatWidget {
     thread_name: Option<String>,
     forked_from: Option<ThreadId>,
     frame_requester: FrameRequester,
+    status_line_manager: Option<StatusLineManager>,
     // Whether to include the initial welcome banner on session configured
     show_welcome_banner: bool,
     // When resuming an existing session (selected via resume picker), avoid an
@@ -988,6 +995,7 @@ impl ChatWidget {
         if let Some(forked_from_id) = forked_from_id {
             self.emit_forked_thread_event(forked_from_id);
         }
+        self.update_status_line();
         if !self.suppress_session_configured_redraw {
             self.request_redraw();
         }
@@ -1366,6 +1374,7 @@ impl ChatWidget {
                 self.token_info = None;
             }
         }
+        self.update_status_line();
     }
 
     fn apply_token_info(&mut self, info: TokenUsageInfo) {
@@ -2460,22 +2469,30 @@ impl ChatWidget {
         };
 
         let active_cell = Some(Self::placeholder_session_header_cell(&config));
-
         let current_cwd = Some(config.cwd.clone());
-        let mut widget = Self {
-            app_event_tx: app_event_tx.clone(),
+
+        let mut bottom_pane = BottomPane::new(BottomPaneParams {
             frame_requester: frame_requester.clone(),
+            app_event_tx: app_event_tx.clone(),
+            has_input_focus: true,
+            enhanced_keys_supported,
+            placeholder_text: placeholder,
+            disable_paste_burst: config.disable_paste_burst,
+            animations_enabled: config.animations,
+            skills: None,
+        });
+        bottom_pane
+            .set_footer_visibility(config.tui_footer.show_repo, config.tui_footer.show_tokens);
+        let status_line_manager = config.tui_status_line_command.clone().map(|settings| {
+            StatusLineManager::new(settings, app_event_tx.clone(), config.cwd.clone())
+        });
+        bottom_pane.set_footer_summary_visible(status_line_manager.is_none());
+
+        let mut widget = Self {
+            app_event_tx,
+            frame_requester,
             codex_op_tx,
-            bottom_pane: BottomPane::new(BottomPaneParams {
-                frame_requester,
-                app_event_tx,
-                has_input_focus: true,
-                enhanced_keys_supported,
-                placeholder_text: placeholder,
-                disable_paste_burst: config.disable_paste_burst,
-                animations_enabled: config.animations,
-                skills: None,
-            }),
+            bottom_pane,
             active_cell,
             active_cell_revision: 0,
             config,
@@ -2515,6 +2532,7 @@ impl ChatWidget {
             thread_name: None,
             forked_from: None,
             queued_user_messages: VecDeque::new(),
+            status_line_manager,
             show_welcome_banner: is_first_run,
             suppress_session_configured_redraw: false,
             pending_notification: None,
@@ -2571,6 +2589,9 @@ impl ChatWidget {
             .bottom_pane
             .set_connectors_enabled(widget.config.features.enabled(Feature::Apps));
 
+        widget.spawn_repo_info_task();
+        widget.update_status_line();
+
         widget
     }
 
@@ -2623,20 +2644,28 @@ impl ChatWidget {
         let active_cell = Some(Self::placeholder_session_header_cell(&config));
         let current_cwd = Some(config.cwd.clone());
 
-        let mut widget = Self {
-            app_event_tx: app_event_tx.clone(),
+        let mut bottom_pane = BottomPane::new(BottomPaneParams {
             frame_requester: frame_requester.clone(),
+            app_event_tx: app_event_tx.clone(),
+            has_input_focus: true,
+            enhanced_keys_supported,
+            placeholder_text: placeholder,
+            disable_paste_burst: config.disable_paste_burst,
+            animations_enabled: config.animations,
+            skills: None,
+        });
+        bottom_pane
+            .set_footer_visibility(config.tui_footer.show_repo, config.tui_footer.show_tokens);
+        let status_line_manager = config.tui_status_line_command.clone().map(|settings| {
+            StatusLineManager::new(settings, app_event_tx.clone(), config.cwd.clone())
+        });
+        bottom_pane.set_footer_summary_visible(status_line_manager.is_none());
+
+        let mut widget = Self {
+            app_event_tx,
+            frame_requester,
             codex_op_tx,
-            bottom_pane: BottomPane::new(BottomPaneParams {
-                frame_requester,
-                app_event_tx,
-                has_input_focus: true,
-                enhanced_keys_supported,
-                placeholder_text: placeholder,
-                disable_paste_burst: config.disable_paste_burst,
-                animations_enabled: config.animations,
-                skills: None,
-            }),
+            bottom_pane,
             active_cell,
             active_cell_revision: 0,
             config,
@@ -2680,6 +2709,7 @@ impl ChatWidget {
             plan_delta_buffer: String::new(),
             plan_item_active: false,
             queued_user_messages: VecDeque::new(),
+            status_line_manager,
             show_welcome_banner: is_first_run,
             suppress_session_configured_redraw: false,
             pending_notification: None,
@@ -2718,6 +2748,9 @@ impl ChatWidget {
             widget.config.features.enabled(Feature::CollaborationModes),
         );
         widget.sync_personality_command_enabled();
+
+        widget.spawn_repo_info_task();
+        widget.update_status_line();
 
         widget
     }
@@ -2773,20 +2806,28 @@ impl ChatWidget {
             settings: fallback_default,
         };
 
-        let mut widget = Self {
-            app_event_tx: app_event_tx.clone(),
+        let mut bottom_pane = BottomPane::new(BottomPaneParams {
             frame_requester: frame_requester.clone(),
+            app_event_tx: app_event_tx.clone(),
+            has_input_focus: true,
+            enhanced_keys_supported,
+            placeholder_text: placeholder,
+            disable_paste_burst: config.disable_paste_burst,
+            animations_enabled: config.animations,
+            skills: None,
+        });
+        bottom_pane
+            .set_footer_visibility(config.tui_footer.show_repo, config.tui_footer.show_tokens);
+        let status_line_manager = config.tui_status_line_command.clone().map(|settings| {
+            StatusLineManager::new(settings, app_event_tx.clone(), config.cwd.clone())
+        });
+        bottom_pane.set_footer_summary_visible(status_line_manager.is_none());
+
+        let mut widget = Self {
+            app_event_tx,
+            frame_requester,
             codex_op_tx,
-            bottom_pane: BottomPane::new(BottomPaneParams {
-                frame_requester,
-                app_event_tx,
-                has_input_focus: true,
-                enhanced_keys_supported,
-                placeholder_text: placeholder,
-                disable_paste_burst: config.disable_paste_burst,
-                animations_enabled: config.animations,
-                skills: None,
-            }),
+            bottom_pane,
             active_cell: None,
             active_cell_revision: 0,
             config,
@@ -2826,6 +2867,7 @@ impl ChatWidget {
             thread_name: None,
             forked_from: None,
             queued_user_messages: VecDeque::new(),
+            status_line_manager,
             show_welcome_banner: false,
             suppress_session_configured_redraw: true,
             pending_notification: None,
@@ -2877,6 +2919,9 @@ impl ChatWidget {
                 ),
         );
         widget.update_collaboration_mode_indicator();
+
+        widget.spawn_repo_info_task();
+        widget.update_status_line();
 
         widget
     }
@@ -5785,6 +5830,7 @@ impl ChatWidget {
         {
             mask.reasoning_effort = Some(effort);
         }
+        self.update_status_line();
     }
 
     /// Set the personality in the widget's config copy.
@@ -5803,6 +5849,7 @@ impl ChatWidget {
             mask.model = Some(model.to_string());
         }
         self.refresh_model_display();
+        self.update_status_line();
     }
 
     pub(crate) fn current_model(&self) -> &str {
@@ -6016,6 +6063,7 @@ impl ChatWidget {
         self.active_collaboration_mask = Some(mask);
         self.update_collaboration_mode_indicator();
         self.refresh_model_display();
+        self.update_status_line();
         self.request_redraw();
     }
 
@@ -6072,6 +6120,7 @@ impl ChatWidget {
         if !merged_header && let Some(cell) = session_info_cell {
             self.add_boxed_history(cell);
         }
+        self.update_status_line();
     }
 
     pub(crate) fn add_info_message(&mut self, message: String, hint: Option<String>) {
@@ -6669,8 +6718,134 @@ impl ChatWidget {
         &self.config
     }
 
+    /// Spawn a background task to collect repo/branch and post an AppEvent.
+    pub(crate) fn spawn_repo_info_task(&self) {
+        let cwd = self.config.cwd.clone();
+        let tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let info = codex_core::git_info::collect_git_info(&cwd).await;
+            if let Some(info) = info {
+                let repo_name = codex_core::git_info::extract_repo_name(&cwd);
+                tx.send(crate::app_event::AppEvent::UpdateRepoInfo {
+                    repo_name: Some(repo_name),
+                    git_branch: info.branch,
+                });
+            } else {
+                tx.send(crate::app_event::AppEvent::UpdateRepoInfo {
+                    repo_name: None,
+                    git_branch: None,
+                });
+            }
+        });
+    }
+
+    /// Apply repository info to the UI.
+    pub(crate) fn apply_repo_info(
+        &mut self,
+        repo_name: Option<String>,
+        git_branch: Option<String>,
+    ) {
+        self.bottom_pane.set_repo_info(repo_name, git_branch);
+        self.update_status_line();
+    }
+
+    pub(crate) fn apply_status_line(&mut self, line: Option<String>) {
+        let parsed = line.map(|line| ansi_escape_line(&line));
+        self.bottom_pane.set_dynamic_status_line(parsed);
+    }
+
+    fn update_status_line(&mut self) {
+        let Some(manager) = self.status_line_manager.as_ref() else {
+            return;
+        };
+        let input = self.status_line_input();
+        manager.update(input);
+    }
+
+    fn status_line_input(&self) -> StatusLineInput {
+        let cwd = self.config.cwd.to_string_lossy().to_string();
+        let project_dir = codex_core::git_info::get_git_repo_root(&self.config.cwd)
+            .unwrap_or_else(|| self.config.cwd.clone())
+            .to_string_lossy()
+            .to_string();
+        let model_id = self.current_model().to_string();
+        let model_display_name = self.model_display_name().to_string();
+        let session_id = self.thread_id.as_ref().map(ToString::to_string);
+        let transcript_path = self
+            .current_rollout_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string());
+        let reasoning_effort = self
+            .effective_reasoning_effort()
+            .or(self.config.model_reasoning_effort)
+            .or(self.status_line_default_reasoning_effort(model_id.as_str()));
+        let context_window = self.status_line_context_window();
+
+        StatusLineInput::for_codex(StatusLineInputArgs {
+            session_id,
+            transcript_path,
+            cwd,
+            project_dir,
+            model_id,
+            model_display_name,
+            reasoning_effort,
+            version: CODEX_CLI_VERSION.to_string(),
+            context_window,
+        })
+    }
+
+    fn status_line_default_reasoning_effort(&self, model: &str) -> Option<ReasoningEffortConfig> {
+        self.models_manager
+            .try_list_models(&self.config)
+            .ok()
+            .and_then(|models| {
+                models
+                    .iter()
+                    .find(|preset| preset.model == model)
+                    .map(|preset| preset.default_reasoning_effort)
+            })
+    }
+
+    fn status_line_context_window(&self) -> Option<StatusLineContextWindow> {
+        let context_window_size = self
+            .token_info
+            .as_ref()
+            .and_then(|info| info.model_context_window)
+            .or(self.config.model_context_window);
+        let current_usage = self.token_info.as_ref().map(|info| {
+            let usage = if context_window_size.is_some() {
+                &info.last_token_usage
+            } else {
+                &info.total_token_usage
+            };
+            StatusLineContextUsage {
+                input_tokens: usage.input_tokens,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: usage.cached_input_tokens,
+                output_tokens: usage.output_tokens,
+                reasoning_output_tokens: usage.reasoning_output_tokens,
+                total_tokens: usage.total_tokens,
+            }
+        });
+
+        let percent_remaining = self
+            .token_info
+            .as_ref()
+            .and_then(|info| self.context_remaining_percent(info));
+
+        if context_window_size.is_some() || current_usage.is_some() || percent_remaining.is_some() {
+            Some(StatusLineContextWindow {
+                context_window_size,
+                current_usage,
+                percent_remaining,
+            })
+        } else {
+            None
+        }
+    }
+
     pub(crate) fn clear_token_usage(&mut self) {
-        self.token_info = None;
+        self.set_token_info(None);
     }
 
     fn as_renderable(&self) -> RenderableItem<'_> {

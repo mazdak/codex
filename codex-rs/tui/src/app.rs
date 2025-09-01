@@ -1599,6 +1599,15 @@ impl App {
                 self.chat_widget.set_model(&model);
                 self.refresh_status_line();
             }
+            AppEvent::UpdateRepoInfo {
+                repo_name,
+                git_branch,
+            } => {
+                self.chat_widget.apply_repo_info(repo_name, git_branch);
+            }
+            AppEvent::UpdateStatusLine { line } => {
+                self.chat_widget.apply_status_line(line);
+            }
             AppEvent::UpdateCollaborationMode(mask) => {
                 self.chat_widget.set_collaboration_mask(mask);
                 self.refresh_status_line();

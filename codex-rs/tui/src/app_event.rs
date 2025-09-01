@@ -305,6 +305,18 @@ pub(crate) enum AppEvent {
     },
     /// Dismiss the status-line setup UI without changing config.
     StatusLineSetupCancelled,
+
+    /// Update repository information shown in the bottom pane footer.
+    /// If not in a Git repo, both values are `None` and the footer hides them.
+    UpdateRepoInfo {
+        repo_name: Option<String>,
+        git_branch: Option<String>,
+    },
+
+    /// Update the dynamic status line output.
+    UpdateStatusLine {
+        line: Option<String>,
+    },
 }
 
 /// The exit strategy requested by the UI layer.

@@ -776,18 +776,61 @@ fn build_columns(entries: Vec<Line<'static>>) -> Vec<Line<'static>> {
         .collect()
 }
 
-pub(crate) fn context_window_line(percent: Option<i64>, used_tokens: Option<i64>) -> Line<'static> {
+fn context_window_text(percent: Option<i64>, used_tokens: Option<i64>) -> String {
     if let Some(percent) = percent {
         let percent = percent.clamp(0, 100);
-        return Line::from(vec![Span::from(format!("{percent}% context left")).dim()]);
+        return format!("{percent}% context left");
     }
 
     if let Some(tokens) = used_tokens {
         let used_fmt = format_tokens_compact(tokens);
-        return Line::from(vec![Span::from(format!("{used_fmt} used")).dim()]);
+        return format!("{used_fmt} used");
     }
 
-    Line::from(vec![Span::from("100% context left").dim()])
+    "100% context left".to_string()
+}
+
+#[cfg(test)]
+pub(crate) fn context_window_line(percent: Option<i64>, used_tokens: Option<i64>) -> Line<'static> {
+    Line::from(vec![
+        Span::from(context_window_text(percent, used_tokens)).dim(),
+    ])
+}
+
+pub(crate) fn footer_context_line(
+    repo_name: Option<&str>,
+    git_branch: Option<&str>,
+    show_repo: bool,
+    show_tokens: bool,
+    percent: Option<i64>,
+    used_tokens: Option<i64>,
+) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    if show_repo && let Some(repo) = repo_name {
+        let repo_text = git_branch
+            .filter(|branch| !branch.is_empty())
+            .map(|branch| format!("{repo}@{branch}"))
+            .unwrap_or_else(|| repo.to_string());
+        if !repo_text.is_empty() {
+            spans.push(Span::from(repo_text).dim());
+        }
+    }
+
+    if show_tokens {
+        let tokens_text = context_window_text(percent, used_tokens);
+        if !tokens_text.is_empty() {
+            if !spans.is_empty() {
+                spans.push(" · ".dim());
+            }
+            spans.push(Span::from(tokens_text).dim());
+        }
+    }
+
+    if spans.is_empty() {
+        Line::from("")
+    } else {
+        Line::from(spans)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

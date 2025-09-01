@@ -636,6 +636,29 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub(crate) fn set_footer_visibility(&mut self, show_repo: bool, show_tokens: bool) {
+        if self.composer.set_footer_visibility(show_repo, show_tokens) {
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn set_footer_summary_visible(&mut self, visible: bool) {
+        if self.composer.set_footer_summary_visible(visible) {
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn set_repo_info(&mut self, repo_name: Option<String>, git_branch: Option<String>) {
+        if self.composer.set_repo_info(repo_name, git_branch) {
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn set_dynamic_status_line(&mut self, line: Option<Line<'static>>) {
+        self.composer.set_dynamic_status_line(line);
+        self.request_redraw();
+    }
+
     /// Show a generic list selection view with the provided items.
     pub(crate) fn show_selection_view(&mut self, params: list_selection_view::SelectionViewParams) {
         let view = list_selection_view::ListSelectionView::new(params, self.app_event_tx.clone());

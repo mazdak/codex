@@ -2,6 +2,7 @@ use crate::auth::AuthCredentialsStoreMode;
 use crate::config::edit::ConfigEdit;
 use crate::config::edit::ConfigEditsBuilder;
 use crate::config::types::DEFAULT_OTEL_ENVIRONMENT;
+use crate::config::types::FooterVisibility;
 use crate::config::types::History;
 use crate::config::types::McpServerConfig;
 use crate::config::types::McpServerDisabledReason;
@@ -13,9 +14,12 @@ use crate::config::types::OtelConfig;
 use crate::config::types::OtelConfigToml;
 use crate::config::types::OtelExporterKind;
 use crate::config::types::SandboxWorkspaceWrite;
+use crate::config::types::ScrollInputMode;
 use crate::config::types::ShellEnvironmentPolicy;
 use crate::config::types::ShellEnvironmentPolicyToml;
 use crate::config::types::SkillsConfig;
+use crate::config::types::StatusLineCommand;
+use crate::config::types::StatusLineSettings;
 use crate::config::types::Tui;
 use crate::config::types::UriBasedFileOpener;
 use crate::config_loader::CloudRequirementsLoader;
@@ -223,9 +227,56 @@ pub struct Config {
     /// - `always`: Always use alternate screen (original behavior).
     /// - `never`: Never use alternate screen (inline mode, preserves scrollback).
     pub tui_alternate_screen: AltScreenMode,
+    /// This is the same `tui.scroll_wheel_lines` value from `config.toml` (see [`Tui`]). TUI2
+    /// applies it to wheel-like scroll streams. Trackpad-like scrolling uses a separate
+    /// `tui.scroll_trackpad_lines` setting.
+    pub tui_scroll_wheel_lines: Option<u16>,
 
+    /// Override the number of lines per tick-equivalent used for trackpad scrolling in TUI2.
+    ///
+    /// This is the same `tui.scroll_trackpad_lines` value from `config.toml` (see [`Tui`]).
+    pub tui_scroll_trackpad_lines: Option<u16>,
+
+    /// Trackpad acceleration: approximate number of events required to gain +1x speed in TUI2.
+    ///
+    /// This is the same `tui.scroll_trackpad_accel_events` value from `config.toml` (see [`Tui`]).
+    pub tui_scroll_trackpad_accel_events: Option<u16>,
+
+    /// Trackpad acceleration: maximum multiplier applied to trackpad-like streams in TUI2.
+    ///
+    /// This is the same `tui.scroll_trackpad_accel_max` value from `config.toml` (see [`Tui`]).
+    pub tui_scroll_trackpad_accel_max: Option<u16>,
+
+    /// Control how TUI2 interprets mouse scroll input (wheel vs trackpad).
+    ///
+    /// This is the same `tui.scroll_mode` value from `config.toml` (see [`Tui`]).
+    pub tui_scroll_mode: ScrollInputMode,
+
+    /// Override the wheel tick detection threshold (ms) for TUI2 auto scroll mode.
+    ///
+    /// This is the same `tui.scroll_wheel_tick_detect_max_ms` value from `config.toml` (see
+    /// [`Tui`]).
+    pub tui_scroll_wheel_tick_detect_max_ms: Option<u64>,
+
+    /// Override the wheel-like end-of-stream threshold (ms) for TUI2 auto scroll mode.
+    ///
+    /// This is the same `tui.scroll_wheel_like_max_duration_ms` value from `config.toml` (see
+    /// [`Tui`]).
+    pub tui_scroll_wheel_like_max_duration_ms: Option<u64>,
+
+    /// Invert mouse scroll direction for TUI2.
+    ///
+    /// This is the same `tui.scroll_invert` value from `config.toml` (see [`Tui`]) and is applied
+    /// consistently to both mouse wheels and trackpads.
+    pub tui_scroll_invert: bool,
     /// Ordered list of status line item identifiers for the TUI.
     pub tui_status_line: Option<Vec<String>>,
+
+    /// Dynamic status line command configuration for the TUI.
+    pub tui_status_line_command: Option<StatusLineSettings>,
+
+    /// Footer visibility settings for the TUI.
+    pub tui_footer: FooterVisibility,
 
     /// The directory that should be treated as the current working directory
     /// for the session. All relative paths inside the business-logic layer are
@@ -1569,6 +1620,18 @@ impl Config {
         let review_model = override_review_model.or(cfg.review_model);
 
         let check_for_update_on_startup = cfg.check_for_update_on_startup.unwrap_or(true);
+        let status_line_command = cfg
+            .tui
+            .as_ref()
+            .and_then(|tui| tui.status_line_command.as_ref())
+            .and_then(StatusLineCommand::resolve);
+        let footer_config = cfg
+            .tui
+            .as_ref()
+            .map(|tui| tui.footer.clone())
+            .unwrap_or_default();
+        let footer_visibility =
+            FooterVisibility::resolve(&footer_config, status_line_command.is_some());
 
         let log_dir = cfg
             .log_dir
@@ -1716,6 +1779,28 @@ impl Config {
                 .map(|t| t.alternate_screen)
                 .unwrap_or_default(),
             tui_status_line: cfg.tui.as_ref().and_then(|t| t.status_line.clone()),
+            tui_scroll_wheel_lines: cfg.tui.as_ref().and_then(|t| t.scroll_wheel_lines),
+            tui_scroll_trackpad_lines: cfg.tui.as_ref().and_then(|t| t.scroll_trackpad_lines),
+            tui_scroll_trackpad_accel_events: cfg
+                .tui
+                .as_ref()
+                .and_then(|t| t.scroll_trackpad_accel_events),
+            tui_scroll_trackpad_accel_max: cfg
+                .tui
+                .as_ref()
+                .and_then(|t| t.scroll_trackpad_accel_max),
+            tui_scroll_mode: cfg.tui.as_ref().map(|t| t.scroll_mode).unwrap_or_default(),
+            tui_scroll_wheel_tick_detect_max_ms: cfg
+                .tui
+                .as_ref()
+                .and_then(|t| t.scroll_wheel_tick_detect_max_ms),
+            tui_scroll_wheel_like_max_duration_ms: cfg
+                .tui
+                .as_ref()
+                .and_then(|t| t.scroll_wheel_like_max_duration_ms),
+            tui_scroll_invert: cfg.tui.as_ref().map(|t| t.scroll_invert).unwrap_or(false),
+            tui_status_line_command: status_line_command,
+            tui_footer: footer_visibility,
             otel: {
                 let t: OtelConfigToml = cfg.otel.unwrap_or_default();
                 let log_user_prompt = t.log_user_prompt.unwrap_or(false);
@@ -1847,6 +1932,7 @@ mod tests {
     use crate::config::edit::ConfigEditsBuilder;
     use crate::config::edit::apply_blocking;
     use crate::config::types::FeedbackConfigToml;
+    use crate::config::types::FooterConfig;
     use crate::config::types::HistoryPersistence;
     use crate::config::types::McpServerTransportConfig;
     use crate::config::types::NotificationMethod;
@@ -1952,6 +2038,16 @@ persistence = "none"
                 experimental_mode: None,
                 alternate_screen: AltScreenMode::Auto,
                 status_line: None,
+                scroll_wheel_lines: None,
+                scroll_trackpad_lines: None,
+                scroll_trackpad_accel_events: None,
+                scroll_trackpad_accel_max: None,
+                scroll_mode: ScrollInputMode::Auto,
+                scroll_wheel_tick_detect_max_ms: None,
+                scroll_wheel_like_max_duration_ms: None,
+                scroll_invert: false,
+                status_line_command: None,
+                footer: FooterConfig::default(),
             }
         );
     }
@@ -3903,6 +3999,19 @@ model_verbosity = "high"
                 feedback_enabled: true,
                 tui_alternate_screen: AltScreenMode::Auto,
                 tui_status_line: None,
+                tui_scroll_wheel_lines: None,
+                tui_scroll_trackpad_lines: None,
+                tui_scroll_trackpad_accel_events: None,
+                tui_scroll_trackpad_accel_max: None,
+                tui_scroll_mode: ScrollInputMode::Auto,
+                tui_scroll_wheel_tick_detect_max_ms: None,
+                tui_scroll_wheel_like_max_duration_ms: None,
+                tui_scroll_invert: false,
+                tui_status_line_command: None,
+                tui_footer: FooterVisibility {
+                    show_repo: true,
+                    show_tokens: true,
+                },
                 otel: OtelConfig::default(),
             },
             o3_profile_config
@@ -3990,6 +4099,19 @@ model_verbosity = "high"
             feedback_enabled: true,
             tui_alternate_screen: AltScreenMode::Auto,
             tui_status_line: None,
+            tui_scroll_wheel_lines: None,
+            tui_scroll_trackpad_lines: None,
+            tui_scroll_trackpad_accel_events: None,
+            tui_scroll_trackpad_accel_max: None,
+            tui_scroll_mode: ScrollInputMode::Auto,
+            tui_scroll_wheel_tick_detect_max_ms: None,
+            tui_scroll_wheel_like_max_duration_ms: None,
+            tui_scroll_invert: false,
+            tui_status_line_command: None,
+            tui_footer: FooterVisibility {
+                show_repo: true,
+                show_tokens: true,
+            },
             otel: OtelConfig::default(),
         };
 
@@ -4092,6 +4214,19 @@ model_verbosity = "high"
             feedback_enabled: true,
             tui_alternate_screen: AltScreenMode::Auto,
             tui_status_line: None,
+            tui_scroll_wheel_lines: None,
+            tui_scroll_trackpad_lines: None,
+            tui_scroll_trackpad_accel_events: None,
+            tui_scroll_trackpad_accel_max: None,
+            tui_scroll_mode: ScrollInputMode::Auto,
+            tui_scroll_wheel_tick_detect_max_ms: None,
+            tui_scroll_wheel_like_max_duration_ms: None,
+            tui_scroll_invert: false,
+            tui_status_line_command: None,
+            tui_footer: FooterVisibility {
+                show_repo: true,
+                show_tokens: true,
+            },
             otel: OtelConfig::default(),
         };
 
@@ -4180,6 +4315,19 @@ model_verbosity = "high"
             feedback_enabled: true,
             tui_alternate_screen: AltScreenMode::Auto,
             tui_status_line: None,
+            tui_scroll_wheel_lines: None,
+            tui_scroll_trackpad_lines: None,
+            tui_scroll_trackpad_accel_events: None,
+            tui_scroll_trackpad_accel_max: None,
+            tui_scroll_mode: ScrollInputMode::Auto,
+            tui_scroll_wheel_tick_detect_max_ms: None,
+            tui_scroll_wheel_like_max_duration_ms: None,
+            tui_scroll_invert: false,
+            tui_status_line_command: None,
+            tui_footer: FooterVisibility {
+                show_repo: true,
+                show_tokens: true,
+            },
             otel: OtelConfig::default(),
         };
 

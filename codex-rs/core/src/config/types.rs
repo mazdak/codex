@@ -447,6 +447,87 @@ impl fmt::Display for NotificationMethod {
     }
 }
 
+/// How TUI2 should interpret mouse scroll events.
+///
+/// Terminals generally encode both mouse wheels and trackpads as the same "scroll up/down" mouse
+/// button events, without a magnitude. This setting controls whether Codex uses a heuristic to
+/// infer wheel vs trackpad per stream, or forces a specific behavior.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollInputMode {
+    /// Infer wheel vs trackpad behavior per scroll stream.
+    #[default]
+    Auto,
+    /// Always treat scroll events as mouse-wheel input (fixed lines per tick).
+    Wheel,
+    /// Always treat scroll events as trackpad input (fractional accumulation).
+    Trackpad,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
+#[serde(untagged)]
+pub enum StatusLineCommand {
+    Command(Vec<String>),
+    Detailed(StatusLineConfig),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
+pub struct StatusLineConfig {
+    pub command: Vec<String>,
+    pub padding: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusLineSettings {
+    pub command: Vec<String>,
+    pub padding: Option<usize>,
+}
+
+impl StatusLineCommand {
+    pub fn resolve(&self) -> Option<StatusLineSettings> {
+        match self {
+            StatusLineCommand::Command(command) => resolve_status_line(command, None),
+            StatusLineCommand::Detailed(config) => {
+                resolve_status_line(&config.command, config.padding)
+            }
+        }
+    }
+}
+
+fn resolve_status_line(command: &[String], padding: Option<usize>) -> Option<StatusLineSettings> {
+    if command.is_empty() {
+        return None;
+    }
+    if command.first().is_some_and(|value| value.trim().is_empty()) {
+        return None;
+    }
+    Some(StatusLineSettings {
+        command: command.to_vec(),
+        padding,
+    })
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
+pub struct FooterConfig {
+    pub show_repo: Option<bool>,
+    pub show_tokens: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FooterVisibility {
+    pub show_repo: bool,
+    pub show_tokens: bool,
+}
+
+impl FooterVisibility {
+    pub fn resolve(config: &FooterConfig, status_line_enabled: bool) -> Self {
+        Self {
+            show_repo: config.show_repo.unwrap_or(!status_line_enabled),
+            show_tokens: config.show_tokens.unwrap_or(!status_line_enabled),
+        }
+    }
+}
+
 /// Collection of settings that are specific to the TUI.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -486,12 +567,51 @@ pub struct Tui {
     /// scrollback in terminal multiplexers like Zellij that follow the xterm spec.
     #[serde(default)]
     pub alternate_screen: AltScreenMode,
-
     /// Ordered list of status line item identifiers.
     ///
     /// When set, the TUI renders the selected items as the status line.
     #[serde(default)]
     pub status_line: Option<Vec<String>>,
+
+    /// Number of lines per wheel-like scroll tick.
+    #[serde(default)]
+    pub scroll_wheel_lines: Option<u16>,
+
+    /// Number of lines per trackpad tick-equivalent.
+    #[serde(default)]
+    pub scroll_trackpad_lines: Option<u16>,
+
+    /// Trackpad acceleration: events needed to gain +1x speed.
+    #[serde(default)]
+    pub scroll_trackpad_accel_events: Option<u16>,
+
+    /// Trackpad acceleration: maximum multiplier applied to trackpad-like streams.
+    #[serde(default)]
+    pub scroll_trackpad_accel_max: Option<u16>,
+
+    /// Control how scroll input is interpreted (wheel vs trackpad).
+    #[serde(default)]
+    pub scroll_mode: ScrollInputMode,
+
+    /// Wheel tick detection threshold (ms) for auto scroll mode.
+    #[serde(default)]
+    pub scroll_wheel_tick_detect_max_ms: Option<u64>,
+
+    /// Wheel-like end-of-stream threshold (ms) for auto scroll mode.
+    #[serde(default)]
+    pub scroll_wheel_like_max_duration_ms: Option<u64>,
+
+    /// Invert mouse scroll direction.
+    #[serde(default)]
+    pub scroll_invert: bool,
+
+    /// Optional dynamic status line command.
+    #[serde(default)]
+    pub status_line_command: Option<StatusLineCommand>,
+
+    /// Footer display controls.
+    #[serde(default)]
+    pub footer: FooterConfig,
 }
 
 const fn default_true() -> bool {

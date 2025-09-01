@@ -115,8 +115,8 @@ use super::footer::FooterMode;
 use super::footer::FooterProps;
 use super::footer::SummaryLeft;
 use super::footer::can_show_left_with_context;
-use super::footer::context_window_line;
 use super::footer::esc_hint_mode;
+use super::footer::footer_context_line;
 use super::footer::footer_height;
 use super::footer::footer_hint_items_width;
 use super::footer::footer_line_width;
@@ -285,6 +285,12 @@ pub(crate) struct ChatComposer {
     footer_mode: FooterMode,
     footer_hint_override: Option<Vec<(String, String)>>,
     footer_flash: Option<FooterFlash>,
+    footer_summary_visible: bool,
+    dynamic_status_line: Option<Line<'static>>,
+    footer_repo_name: Option<String>,
+    footer_git_branch: Option<String>,
+    footer_show_repo: bool,
+    footer_show_tokens: bool,
     context_window_percent: Option<i64>,
     context_window_used_tokens: Option<i64>,
     skills: Option<Vec<SkillMetadata>>,
@@ -317,7 +323,7 @@ enum ActivePopup {
     Skill(SkillPopup),
 }
 
-const FOOTER_SPACING_HEIGHT: u16 = 0;
+const FOOTER_SPACING_HEIGHT: u16 = 1;
 
 impl ChatComposer {
     pub fn new(
@@ -377,6 +383,12 @@ impl ChatComposer {
             footer_mode: FooterMode::ComposerEmpty,
             footer_hint_override: None,
             footer_flash: None,
+            footer_summary_visible: true,
+            dynamic_status_line: None,
+            footer_repo_name: None,
+            footer_git_branch: None,
+            footer_show_repo: true,
+            footer_show_tokens: true,
             context_window_percent: None,
             context_window_used_tokens: None,
             skills: None,
@@ -2999,6 +3011,40 @@ impl ChatComposer {
         self.is_task_running = running;
     }
 
+    pub(crate) fn set_footer_visibility(&mut self, show_repo: bool, show_tokens: bool) -> bool {
+        if self.footer_show_repo == show_repo && self.footer_show_tokens == show_tokens {
+            return false;
+        }
+        self.footer_show_repo = show_repo;
+        self.footer_show_tokens = show_tokens;
+        true
+    }
+
+    pub(crate) fn set_footer_summary_visible(&mut self, visible: bool) -> bool {
+        if self.footer_summary_visible == visible {
+            return false;
+        }
+        self.footer_summary_visible = visible;
+        true
+    }
+
+    pub(crate) fn set_repo_info(
+        &mut self,
+        repo_name: Option<String>,
+        git_branch: Option<String>,
+    ) -> bool {
+        if self.footer_repo_name == repo_name && self.footer_git_branch == git_branch {
+            return false;
+        }
+        self.footer_repo_name = repo_name;
+        self.footer_git_branch = git_branch;
+        true
+    }
+
+    pub(crate) fn set_dynamic_status_line(&mut self, line: Option<Line<'static>>) {
+        self.dynamic_status_line = line;
+    }
+
     pub(crate) fn set_context_window(&mut self, percent: Option<i64>, used_tokens: Option<i64>) {
         if self.context_window_percent == percent && self.context_window_used_tokens == used_tokens
         {
@@ -3117,6 +3163,14 @@ impl ChatComposer {
                     | FooterMode::ShortcutOverlay
                     | FooterMode::EscHint => false,
                 };
+                let context_line = footer_context_line(
+                    self.footer_repo_name.as_deref(),
+                    self.footer_git_branch.as_deref(),
+                    self.footer_show_repo,
+                    self.footer_show_tokens,
+                    footer_props.context_window_percent,
+                    footer_props.context_window_used_tokens,
+                );
                 let custom_height = self.custom_footer_height();
                 let footer_hint_height =
                     custom_height.unwrap_or_else(|| footer_height(&footer_props));
@@ -3167,6 +3221,11 @@ impl ChatComposer {
                         .as_ref()
                         .map(|line| line.width() as u16)
                         .unwrap_or(0)
+                } else if !self.footer_summary_visible {
+                    self.dynamic_status_line
+                        .as_ref()
+                        .map(|line| line.width() as u16)
+                        .unwrap_or(0)
                 } else {
                     footer_line_width(
                         &footer_props,
@@ -3187,10 +3246,7 @@ impl ChatComposer {
                         compact
                     }
                 } else {
-                    Some(context_window_line(
-                        footer_props.context_window_percent,
-                        footer_props.context_window_used_tokens,
-                    ))
+                    Some(context_line.clone())
                 };
                 let right_width = right_line.as_ref().map(|l| l.width() as u16).unwrap_or(0);
                 if status_line_active
@@ -3216,14 +3272,23 @@ impl ChatComposer {
                             // either the shortcuts hint or the optional queue hint). We still
                             // want the single-line collapse rules so the mode label can win over
                             // the context indicator on narrow widths.
-                            Some(single_line_footer_layout(
-                                hint_rect,
-                                right_width,
-                                left_mode_indicator,
-                                show_cycle_hint,
-                                show_shortcuts_hint,
-                                show_queue_hint,
-                            ))
+                            if self.footer_summary_visible {
+                                Some(single_line_footer_layout(
+                                    hint_rect,
+                                    right_width,
+                                    left_mode_indicator,
+                                    show_cycle_hint,
+                                    show_shortcuts_hint,
+                                    show_queue_hint,
+                                ))
+                            } else {
+                                let summary_left = self
+                                    .dynamic_status_line
+                                    .as_ref()
+                                    .map(|line| SummaryLeft::Custom(line.clone()))
+                                    .unwrap_or(SummaryLeft::None);
+                                Some((summary_left, can_show_left_and_context))
+                            }
                         }
                         FooterMode::EscHint
                         | FooterMode::QuitShortcutReminder

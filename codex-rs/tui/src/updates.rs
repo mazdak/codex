@@ -55,10 +55,10 @@ struct VersionInfo {
 }
 
 const VERSION_FILENAME: &str = "version.json";
-// We use the latest version from the cask if installation is via homebrew - homebrew does not immediately pick up the latest release and can lag behind.
-const HOMEBREW_CASK_URL: &str =
-    "https://raw.githubusercontent.com/Homebrew/homebrew-cask/HEAD/Casks/c/codex.rb";
-const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
+// Defaults point at our fork; override via env at build time if needed.
+const DEFAULT_RELEASE_REPO: &str = "mazdak/codex";
+const DEFAULT_BREW_FORMULA_URL: &str =
+    "https://raw.githubusercontent.com/mazdak/homebrew-tap/HEAD/Formula/codex.rb";
 
 #[derive(Deserialize, Debug, Clone)]
 struct ReleaseInfo {
@@ -77,8 +77,9 @@ fn read_version_info(version_file: &Path) -> anyhow::Result<VersionInfo> {
 async fn check_for_update(version_file: &Path) -> anyhow::Result<()> {
     let latest_version = match update_action::get_update_action() {
         Some(UpdateAction::BrewUpgrade) => {
+            let formula_url = brew_formula_url();
             let cask_contents = create_client()
-                .get(HOMEBREW_CASK_URL)
+                .get(&formula_url)
                 .send()
                 .await?
                 .error_for_status()?
@@ -87,10 +88,11 @@ async fn check_for_update(version_file: &Path) -> anyhow::Result<()> {
             extract_version_from_cask(&cask_contents)?
         }
         _ => {
+            let release_url = latest_release_url();
             let ReleaseInfo {
                 tag_name: latest_tag_name,
             } = create_client()
-                .get(LATEST_RELEASE_URL)
+                .get(&release_url)
                 .send()
                 .await?
                 .error_for_status()?
@@ -140,6 +142,23 @@ fn extract_version_from_latest_tag(latest_tag_name: &str) -> anyhow::Result<Stri
         .strip_prefix("rust-v")
         .map(str::to_owned)
         .ok_or_else(|| anyhow::anyhow!("Failed to parse latest tag name '{latest_tag_name}'"))
+}
+
+fn release_repo() -> String {
+    option_env!("CODEX_RELEASE_REPO")
+        .unwrap_or(DEFAULT_RELEASE_REPO)
+        .to_string()
+}
+
+fn brew_formula_url() -> String {
+    option_env!("CODEX_BREW_FORMULA_URL")
+        .unwrap_or(DEFAULT_BREW_FORMULA_URL)
+        .to_string()
+}
+
+fn latest_release_url() -> String {
+    let repo = release_repo();
+    format!("https://api.github.com/repos/{repo}/releases/latest")
 }
 
 /// Returns the latest version to show in a popup, if it should be shown.

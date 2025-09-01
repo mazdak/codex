@@ -311,6 +311,17 @@
       },
       "type": "object"
     },
+    "FooterConfig": {
+      "properties": {
+        "show_repo": {
+          "type": "boolean"
+        },
+        "show_tokens": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "ForcedLoginMethod": {
       "enum": [
         "chatgpt",
@@ -888,6 +899,32 @@
       },
       "type": "object"
     },
+    "ScrollInputMode": {
+      "description": "How TUI2 should interpret mouse scroll events.\n\nTerminals generally encode both mouse wheels and trackpads as the same \"scroll up/down\" mouse button events, without a magnitude. This setting controls whether Codex uses a heuristic to infer wheel vs trackpad per stream, or forces a specific behavior.",
+      "oneOf": [
+        {
+          "description": "Infer wheel vs trackpad behavior per scroll stream.",
+          "enum": [
+            "auto"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Always treat scroll events as mouse-wheel input (fixed lines per tick).",
+          "enum": [
+            "wheel"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Always treat scroll events as trackpad input (fractional accumulation).",
+          "enum": [
+            "trackpad"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "ShellEnvironmentPolicyInherit": {
       "oneOf": [
         {
@@ -977,6 +1014,38 @@
       },
       "type": "object"
     },
+    "StatusLineCommand": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "$ref": "#/definitions/StatusLineConfig"
+        }
+      ]
+    },
+    "StatusLineConfig": {
+      "properties": {
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "padding": {
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    },
     "ToolsToml": {
       "additionalProperties": false,
       "properties": {
@@ -1027,6 +1096,18 @@
           "default": null,
           "description": "Start the TUI in the specified collaboration mode (plan/default). Defaults to unset."
         },
+        "footer": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/FooterConfig"
+            }
+          ],
+          "default": {
+            "show_repo": null,
+            "show_tokens": null
+          },
+          "description": "Footer display controls."
+        },
         "notification_method": {
           "allOf": [
             {
@@ -1045,6 +1126,62 @@
           "default": true,
           "description": "Enable desktop notifications from the TUI when the terminal is unfocused. Defaults to `true`."
         },
+        "scroll_invert": {
+          "default": false,
+          "description": "Invert mouse scroll direction.",
+          "type": "boolean"
+        },
+        "scroll_mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ScrollInputMode"
+            }
+          ],
+          "default": "auto",
+          "description": "Control how scroll input is interpreted (wheel vs trackpad)."
+        },
+        "scroll_trackpad_accel_events": {
+          "default": null,
+          "description": "Trackpad acceleration: events needed to gain +1x speed.",
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "scroll_trackpad_accel_max": {
+          "default": null,
+          "description": "Trackpad acceleration: maximum multiplier applied to trackpad-like streams.",
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "scroll_trackpad_lines": {
+          "default": null,
+          "description": "Number of lines per trackpad tick-equivalent.",
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "scroll_wheel_like_max_duration_ms": {
+          "default": null,
+          "description": "Wheel-like end-of-stream threshold (ms) for auto scroll mode.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "scroll_wheel_lines": {
+          "default": null,
+          "description": "Number of lines per wheel-like scroll tick.",
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "scroll_wheel_tick_detect_max_ms": {
+          "default": null,
+          "description": "Wheel tick detection threshold (ms) for auto scroll mode.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "show_tooltips": {
           "default": true,
           "description": "Show startup tooltips in the TUI welcome screen. Defaults to `true`.",
@@ -1057,6 +1194,15 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "status_line_command": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/StatusLineCommand"
+            }
+          ],
+          "default": null,
+          "description": "Optional dynamic status line command."
         }
       },
       "type": "object"

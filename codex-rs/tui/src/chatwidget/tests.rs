@@ -940,6 +940,7 @@ async fn make_chatwidget_manual(
         thread_name: None,
         forked_from: None,
         frame_requester: FrameRequester::test_dummy(),
+        status_line_manager: None,
         show_welcome_banner: true,
         queued_user_messages: VecDeque::new(),
         suppress_session_configured_redraw: false,
