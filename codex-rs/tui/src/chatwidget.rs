@@ -8,7 +8,8 @@ use std::time::Duration;
 use codex_app_server_protocol::AuthMode;
 use codex_backend_client::Client as BackendClient;
 use codex_core::config::Config;
-use codex_core::config::types::Notifications;
+use codex_core::config_types::Notifications;
+use codex_core::git_info;
 use codex_core::git_info::current_branch_name;
 use codex_core::git_info::local_git_branches;
 use codex_core::openai_models::models_manager::ModelsManager;
@@ -521,10 +522,21 @@ impl ChatWidget {
     }
 
     pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {
+        self.bottom_pane.set_token_usage_info(info.clone());
         match info {
-            Some(info) => self.apply_token_info(info),
+            Some(info) => {
+                let context_window = info
+                    .model_context_window
+                    .or(self.config.model_context_window);
+                let percent = context_window.map(|window| {
+                    info.last_token_usage
+                        .percent_of_context_window_remaining(window)
+                });
+                self.bottom_pane.set_context_window_percent(percent);
+                self.token_info = Some(info);
+            }
             None => {
-                self.bottom_pane.set_context_window(None, None);
+                self.bottom_pane.set_context_window_percent(None);
                 self.token_info = None;
             }
         }
@@ -1300,10 +1312,11 @@ impl ChatWidget {
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
             current_rollout_path: None,
+        }
         };
 
-        widget.prefetch_rate_limits();
-
+        // Update repository information for status display asynchronously
+        widget.spawn_repo_info_task();
         widget
     }
 
@@ -1382,10 +1395,11 @@ impl ChatWidget {
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
             current_rollout_path: None,
+        }
         };
 
-        widget.prefetch_rate_limits();
-
+        // Update repository information for status display asynchronously
+        widget.spawn_repo_info_task();
         widget
     }
 
@@ -3117,8 +3131,38 @@ impl ChatWidget {
         &self.config
     }
 
+    /// Spawn a background task to collect repo/branch and post an AppEvent.
+    pub(crate) fn spawn_repo_info_task(&self) {
+        let cwd = self.config.cwd.clone();
+        let tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let info = git_info::collect_git_info(&cwd).await;
+            if let Some(info) = info {
+                let repo_name = git_info::extract_repo_name(&cwd);
+                tx.send(crate::app_event::AppEvent::UpdateRepoInfo {
+                    repo_name: Some(repo_name),
+                    git_branch: info.branch,
+                });
+            } else {
+                tx.send(crate::app_event::AppEvent::UpdateRepoInfo {
+                    repo_name: None,
+                    git_branch: None,
+                });
+            }
+        });
+    }
+
+    /// Apply repository info to the UI.
+    pub(crate) fn apply_repo_info(
+        &mut self,
+        repo_name: Option<String>,
+        git_branch: Option<String>,
+    ) {
+        self.bottom_pane.set_repo_info(repo_name, git_branch);
+    }
+
     pub(crate) fn clear_token_usage(&mut self) {
-        self.token_info = None;
+        self.set_token_info(None);
     }
 
     fn as_renderable(&self) -> RenderableItem<'_> {
