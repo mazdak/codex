@@ -71,6 +71,7 @@ use self::interrupts::InterruptManager;
 mod agent;
 use self::agent::spawn_agent;
 use self::agent::spawn_agent_from_existing;
+use crate::session_meta::read_session_stats;
 use crate::streaming::controller::AppEventHistorySink;
 use crate::streaming::controller::StreamController;
 use codex_common::approval_presets::ApprovalPreset;
@@ -158,6 +159,11 @@ impl ChatWidget {
         ));
         // Ask codex-core to enumerate custom prompts for this session.
         self.submit_op(Op::ListCustomPrompts);
+        // If this session was created by resuming from a saved rollout, request the
+        // full conversation history so we can render it into the transcript.
+        if self.config.experimental_resume.is_some() {
+            self.submit_op(Op::GetHistory);
+        }
         if let Some(user_message) = self.initial_user_message.take() {
             self.submit_user_message(user_message);
         }
@@ -894,14 +900,45 @@ impl ChatWidget {
                 Vec::new()
             }
         };
+        // Filter to sessions that match current working directory by scanning the
+        // environment_context header in the rollout file.
+        let cwd = self.config.cwd.clone();
+        let mut only_this_project: Vec<_> = sessions
+            .into_iter()
+            .filter(|s| session_file_matches_cwd(&s.path, &cwd))
+            .collect();
+        let showing_filtered = !only_this_project.is_empty();
+        if !showing_filtered {
+            // Fallback to all sessions if none match this project.
+            only_this_project =
+                codex_core::sessions::list_sessions(&self.config).unwrap_or_default();
+        }
         let mut items: Vec<crate::bottom_pane::SelectionItem> = Vec::new();
-        for s in sessions {
-            let title = s.title.clone().unwrap_or_else(|| "(no title)".to_string());
-            let desc = Some(format!(
-                "created: {}   last: {}",
-                s.created,
-                s.last_active.unwrap_or_else(|| "unknown".to_string())
-            ));
+        let current_id = self.session_id();
+        // Prepare for alignment: compute max width of the core segment "date (N) ", then add a fixed-position bullet.
+        let mut prepared: Vec<(String, u32, uuid::Uuid)> = Vec::new();
+        for s in &only_this_project {
+            let stats = read_session_stats(&s.path, 512 * 1024);
+            let n = stats.message_count.unwrap_or(0);
+            let date = s
+                .last_active
+                .clone()
+                .unwrap_or_else(|| s.created.clone());
+            prepared.push((date, n, s.id));
+        }
+        let max_core = prepared
+            .iter()
+            .map(|(d, n, _)| format!("{d} ({n}) ").chars().count())
+            .max()
+            .unwrap_or(0);
+
+        for s in only_this_project {
+            let stats = read_session_stats(&s.path, 512 * 1024);
+            let n = stats.message_count.unwrap_or(0);
+            let date = s.last_active.clone().unwrap_or_else(|| s.created.clone());
+            let core = format!("{date} ({n}) ");
+            let name = format!("{core:<width$}• id: {}", s.id, width = max_core);
+            let desc = None;
             let path = s.path.clone();
             let id = s.id;
             let actions: Vec<crate::bottom_pane::SelectionAction> = vec![Box::new(move |tx| {
@@ -909,9 +946,9 @@ impl ChatWidget {
                 tx.send(crate::app_event::AppEvent::ResumeSession(path.clone()));
             })];
             items.push(crate::bottom_pane::SelectionItem {
-                name: format!("{title} — {id}"),
+                name,
                 description: desc,
-                is_current: false,
+                is_current: current_id.is_some_and(|cid| cid == id),
                 actions,
             });
         }
@@ -924,8 +961,8 @@ impl ChatWidget {
             });
         }
         self.bottom_pane.show_selection_view(
-            "Sessions".to_string(),
-            Some("Select a session to resume".to_string()),
+            "Sessions — date, count, id only".to_string(),
+            Some("Showing sessions for current project".to_string()),
             Some("Up/Down to navigate; Enter to resume; Esc to cancel".to_string()),
             items,
         );
@@ -1370,6 +1407,28 @@ impl ChatWidget {
         let [_, bottom_pane_area] = self.layout_areas(area);
         self.bottom_pane.cursor_pos(bottom_pane_area)
     }
+}
+
+fn session_file_matches_cwd(path: &std::path::Path, cwd: &std::path::Path) -> bool {
+    // Best-effort: scan first ~128KB for an environment_context block with matching cwd
+    const MAX_BYTES: usize = 128 * 1024;
+    let Ok(f) = std::fs::File::open(path) else {
+        return false;
+    };
+    use std::io::Read;
+    let mut buf = String::new();
+    let _ = f.take(MAX_BYTES as u64).read_to_string(&mut buf);
+    if buf.is_empty() {
+        return false;
+    }
+    let needle_start = "<environment_context>";
+    let needle_end = "</environment_context>";
+    if let (Some(si), Some(ei)) = (buf.find(needle_start), buf.find(needle_end)) {
+        let block = &buf[si..ei];
+        let cwd_str = cwd.to_string_lossy();
+        return block.contains(&format!("<cwd>{cwd_str}</cwd>"));
+    }
+    false
 }
 
 impl WidgetRef for &ChatWidget {
