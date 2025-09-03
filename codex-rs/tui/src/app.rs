@@ -133,6 +133,12 @@ impl App {
                     self.chat_widget.handle_paste(pasted);
                 }
                 TuiEvent::Draw => {
+                    if self
+                        .chat_widget
+                        .handle_paste_burst_tick(tui.frame_requester())
+                    {
+                        return Ok(true);
+                    }
                     tui.draw(
                         self.chat_widget.desired_height(tui.terminal.size()?.width),
                         |frame| {
@@ -170,6 +176,12 @@ impl App {
                     self.enhanced_keys_supported,
                 );
                 tui.frame_requester().schedule_frame();
+            }
+            AppEvent::UpdateRepoInfo {
+                repo_name,
+                git_branch,
+            } => {
+                self.chat_widget.apply_repo_info(repo_name, git_branch);
             }
             AppEvent::ResumeSession(path) => {
                 self.config.experimental_resume = Some(path);
