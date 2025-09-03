@@ -686,7 +686,19 @@ impl Session {
     }
 
     async fn record_state_snapshot(&self, items: &[ResponseItem]) {
-        let snapshot = { crate::rollout::SessionStateSnapshot {} };
+        // Include a lightweight message count so UIs can display (N) without
+        // having to rescan the entire rollout file. Leave other summary
+        // fields empty; the UI/background can update them asynchronously.
+        let msg_count: u32 = {
+            let state = self.state.lock_unchecked();
+            state.history.contents().len() as u32
+        };
+        let snapshot = crate::rollout::SessionStateSnapshot {
+            summary: None,
+            message_count: Some(msg_count),
+            last_summarized_at: None,
+            last_summary_inputs_hash: None,
+        };
 
         let recorder = {
             let guard = self.rollout.lock_unchecked();

@@ -77,5 +77,17 @@ impl HeaderEmitter {
 
 fn render_header_line() -> ratatui::text::Line<'static> {
     use ratatui::style::Stylize;
-    ratatui::text::Line::from("codex".magenta().bold())
+    #[cfg(test)]
+    {
+        // Keep snapshots stable in tests.
+        ratatui::text::Line::from("codex".magenta().bold())
+    }
+    #[cfg(not(test))]
+    {
+        let hm = chrono::Local::now().format("%H:%M").to_string();
+        let mut line = ratatui::text::Line::from("codex".magenta().bold());
+        line.push_span(" • ");
+        line.push_span(hm.dim());
+        line
+    }
 }

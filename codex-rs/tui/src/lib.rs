@@ -49,6 +49,7 @@ pub mod onboarding;
 mod pager_overlay;
 mod render;
 mod session_log;
+mod session_meta;
 mod shimmer;
 mod slash_command;
 mod status_indicator_widget;
