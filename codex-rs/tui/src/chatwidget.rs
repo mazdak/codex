@@ -8,7 +8,7 @@ use std::time::Duration;
 use codex_app_server_protocol::AuthMode;
 use codex_backend_client::Client as BackendClient;
 use codex_core::config::Config;
-use codex_core::config_types::Notifications;
+use codex_core::config::types::Notifications;
 use codex_core::git_info;
 use codex_core::git_info::current_branch_name;
 use codex_core::git_info::local_git_branches;
@@ -1312,7 +1312,6 @@ impl ChatWidget {
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
             current_rollout_path: None,
-        }
         };
 
         // Update repository information for status display asynchronously
@@ -1395,7 +1394,6 @@ impl ChatWidget {
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
             current_rollout_path: None,
-        }
         };
 
         // Update repository information for status display asynchronously
