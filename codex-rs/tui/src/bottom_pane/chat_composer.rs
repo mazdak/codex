@@ -41,10 +41,10 @@ use crate::bottom_pane::prompt_args::parse_slash_name;
 use crate::bottom_pane::prompt_args::prompt_argument_names;
 use crate::bottom_pane::prompt_args::prompt_command_with_arg_placeholders;
 use crate::bottom_pane::prompt_args::prompt_has_numeric_placeholders;
+use crate::key_hint;
 use crate::render::Insets;
 use crate::render::RectExt;
 use crate::render::renderable::Renderable;
-use crate::key_hint;
 use crate::slash_command::SlashCommand;
 use crate::slash_command::built_in_slash_commands;
 use crate::style::user_message_style;
@@ -2215,11 +2215,14 @@ mod tests {
         let branch = "feature/super/long/branch/name".to_string();
         composer.set_repo_info(Some(repo.clone()), Some(branch.clone()));
 
-        // Width chosen so repo + branch still exceed available space even after hints are trimmed
-        // width 60 -> repo_budget 27, branch_budget 16
-        let area = Rect::new(0, 0, 60, 3);
+        let footer_props = composer.footer_props();
+        let footer_lines = footer_height(footer_props);
+        let footer_spacing = ChatComposer::footer_spacing(footer_lines);
+        // Width chosen so repo + branch still exceed available space even after hints are trimmed.
+        let area_height = 3 + footer_lines + footer_spacing;
+        let area = Rect::new(0, 0, 60, area_height);
         let mut buf = Buffer::empty(area);
-        composer.render_ref(area, &mut buf);
+        composer.render(area, &mut buf);
 
         // Read last row where the footer is rendered
         let mut row = String::new();
@@ -2863,8 +2866,6 @@ mod tests {
 
     #[test]
     fn slash_popup_resume_for_res_ui() {
-    fn footer_repo_branch_snapshots_various_widths() {
-        use insta::assert_snapshot;
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
@@ -2916,6 +2917,18 @@ mod tests {
                 None => panic!("no selected command for '/res'"),
             },
             _ => panic!("slash popup not active after typing '/res'"),
+        }
+    }
+
+    #[test]
+    fn footer_repo_branch_snapshots_various_widths() {
+        use insta::assert_snapshot;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+
         let widths = [40u16, 80u16, 120u16];
 
         for &w in &widths {
@@ -2933,7 +2946,7 @@ mod tests {
 
             let mut terminal = Terminal::new(TestBackend::new(w, 4)).expect("terminal");
             terminal
-                .draw(|f| f.render_widget_ref(composer, f.area()))
+                .draw(|f| composer.render(f.area(), f.buffer_mut()))
                 .expect("draw");
 
             let name = format!("footer_repo_branch_w{w}");

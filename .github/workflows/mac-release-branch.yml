@@ -1,0 +1,158 @@
+# mac-only release build for personal branch
+name: mac-release-branch
+
+on:
+  push:
+    tags:
+      # Match the upstream codex tag format so versioning stays aligned.
+      - "rust-v*.*.*"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tag-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate tag format
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${GITHUB_REF_TYPE}" == "tag" ]] || { echo "Not a tag push"; exit 1; }
+          [[ "${GITHUB_REF_NAME}" =~ ^rust-v([0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9\.]+)?)$ ]] \
+            || { echo "Tag '${GITHUB_REF_NAME}' must look like rust-v<semver>"; exit 1; }
+
+  build:
+    needs: tag-check
+    runs-on: macos-15-xlarge
+    defaults:
+      run:
+        working-directory: codex-rs
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@1.90
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ${{ github.workspace }}/codex-rs/target/
+          key: cargo-macos-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binaries
+        run: cargo build --target ${{ matrix.target }} --release --bin codex --bin codex-responses-api-proxy
+
+      - name: Package artifacts
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#rust-v}"
+          dest="dist/${{ matrix.target }}"
+          mkdir -p "$dest"
+          for bin in codex codex-responses-api-proxy; do
+            src="target/${{ matrix.target }}/release/${bin}"
+            [[ -f "$src" ]] || { echo "missing $src"; exit 1; }
+            tar -C "target/${{ matrix.target }}/release" -czf "$dest/${bin}-${version}-${{ matrix.target }}.tar.gz" "$bin"
+          done
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: mac-${{ matrix.target }}
+          path: codex-rs/dist/${{ matrix.target }}/*
+
+  tap-update:
+    name: Update homebrew tap
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      TAP_REPO: mazdak/homebrew-tap
+      FORMULA_PATH: Formula/codex.rb
+    steps:
+      - name: Download mac artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: mac-*
+          merge-multiple: true
+
+      - name: Compute shas
+        id: shas
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#rust-v}"
+          arm_file="codex-${version}-aarch64-apple-darwin.tar.gz"
+          x86_file="codex-${version}-x86_64-apple-darwin.tar.gz"
+          [[ -f "$arm_file" && -f "$x86_file" ]] || { echo "missing mac artifacts"; ls -l; exit 1; }
+          arm_sha="$(sha256sum "$arm_file" | cut -d' ' -f1)"
+          x86_sha="$(sha256sum "$x86_file" | cut -d' ' -f1)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "arm_sha=$arm_sha" >> "$GITHUB_OUTPUT"
+          echo "x86_sha=$x86_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout tap
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.TAP_REPO }}
+          token: ${{ secrets.TAP_PUSH_TOKEN }}
+
+      - name: Update formula
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.shas.outputs.version }}"
+          arm_sha="${{ steps.shas.outputs.arm_sha }}"
+          x86_sha="${{ steps.shas.outputs.x86_sha }}"
+          cat > "${FORMULA_PATH}" <<'RUBY'
+class Codex < Formula
+  desc "Codex CLI"
+  homepage "https://github.com/mazdak/codex"
+RUBY
+          cat >> "${FORMULA_PATH}" <<RUBY
+  version "${version}"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/mazdak/codex/releases/download/rust-v#{version}/codex-#{version}-aarch64-apple-darwin.tar.gz"
+      sha256 "${arm_sha}"
+    end
+    on_intel do
+      url "https://github.com/mazdak/codex/releases/download/rust-v#{version}/codex-#{version}-x86_64-apple-darwin.tar.gz"
+      sha256 "${x86_sha}"
+    end
+  end
+
+  def install
+    bin.install "codex"
+  end
+
+  test do
+    system "#{bin}/codex", "--version"
+  end
+end
+RUBY
+
+      - name: Commit and push
+        if: ${{ secrets.TAP_PUSH_TOKEN != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "${FORMULA_PATH}"
+          git commit -m "codex ${GITHUB_REF_NAME#refs/tags/}"
+          git push origin HEAD
