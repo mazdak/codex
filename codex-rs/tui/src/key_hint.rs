@@ -109,6 +109,8 @@ pub(crate) fn is_altgr(mods: KeyModifiers) -> bool {
 #[inline]
 pub(crate) fn is_altgr(_mods: KeyModifiers) -> bool {
     false
+}
+
 pub(crate) fn plain_span(key: impl Display) -> Span<'static> {
     Span::styled(format!("{key}"), key_hint_style())
 }
