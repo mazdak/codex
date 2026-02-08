@@ -4946,6 +4946,31 @@ async fn status_line_invalid_items_warn_once() {
 }
 
 #[tokio::test]
+async fn status_line_command_promotes_from_legacy_items() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.config.tui_status_line = Some(vec![
+        "bash".to_string(),
+        "-lc".to_string(),
+        "/tmp/claude-status-line".to_string(),
+    ]);
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.refresh_status_line();
+
+    assert!(chat.status_line_manager.is_some());
+    assert!(chat.config.tui_status_line.is_none());
+    assert!(chat.config.tui_status_line_command.is_some());
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one warning history cell");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains("tui.status_line"),
+        "warning cell missing migration hint: {rendered}"
+    );
+}
+
+#[tokio::test]
 async fn status_line_branch_state_resets_when_git_branch_disabled() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.status_line_branch = Some("main".to_string());

@@ -188,14 +188,19 @@ pub(crate) fn footer_height(props: &FooterProps) -> u16 {
     footer_from_props_lines(props, None, false, show_shortcuts_hint, show_queue_hint).len() as u16
 }
 
-/// Render a single precomputed footer line.
-pub(crate) fn render_footer_line(area: Rect, buf: &mut Buffer, line: Line<'static>) {
+/// Render multiple precomputed footer lines.
+pub(crate) fn render_footer_lines(area: Rect, buf: &mut Buffer, lines: Vec<Line<'static>>) {
     Paragraph::new(prefix_lines(
-        vec![line],
+        lines,
         " ".repeat(FOOTER_INDENT_COLS).into(),
         " ".repeat(FOOTER_INDENT_COLS).into(),
     ))
     .render(area, buf);
+}
+
+/// Render a single precomputed footer line.
+pub(crate) fn render_footer_line(area: Rect, buf: &mut Buffer, line: Line<'static>) {
+    render_footer_lines(area, buf, vec![line]);
 }
 
 /// Render footer content directly from `FooterProps`.

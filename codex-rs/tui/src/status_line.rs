@@ -1,6 +1,7 @@
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use codex_core::config::types::StatusLineSettings;
+use codex_protocol::config_types::ModeKind;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -21,6 +22,7 @@ pub(crate) struct StatusLineInput {
     pub(crate) hook_event_name: &'static str,
     pub(crate) session_id: Option<String>,
     pub(crate) transcript_path: Option<String>,
+    pub(crate) mode_kind: ModeKind,
     pub(crate) cwd: String,
     pub(crate) workspace: StatusLineWorkspace,
     pub(crate) model: StatusLineModel,
@@ -33,6 +35,7 @@ pub(crate) struct StatusLineInput {
 pub(crate) struct StatusLineInputArgs {
     pub(crate) session_id: Option<String>,
     pub(crate) transcript_path: Option<String>,
+    pub(crate) mode_kind: ModeKind,
     pub(crate) cwd: String,
     pub(crate) project_dir: String,
     pub(crate) model_id: String,
@@ -47,6 +50,7 @@ impl StatusLineInput {
         let StatusLineInputArgs {
             session_id,
             transcript_path,
+            mode_kind,
             cwd,
             project_dir,
             model_id,
@@ -63,6 +67,7 @@ impl StatusLineInput {
             hook_event_name: STATUS_LINE_HOOK_EVENT,
             session_id,
             transcript_path,
+            mode_kind,
             cwd: cwd.clone(),
             workspace: StatusLineWorkspace {
                 current_dir: cwd,

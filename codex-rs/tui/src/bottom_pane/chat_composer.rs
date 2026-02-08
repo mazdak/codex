@@ -88,6 +88,7 @@ use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::key_hint::has_ctrl_or_alt;
 use crate::ui_consts::FOOTER_INDENT_COLS;
+use crate::wrapping::word_wrap_lines;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -126,6 +127,7 @@ use super::footer::render_context_right;
 use super::footer::render_footer_from_props;
 use super::footer::render_footer_hint_items;
 use super::footer::render_footer_line;
+use super::footer::render_footer_lines;
 use super::footer::reset_mode_after_activity;
 use super::footer::single_line_footer_layout;
 use super::footer::toggle_shortcut_mode;
@@ -477,7 +479,7 @@ impl ChatComposer {
     fn layout_areas(&self, area: Rect) -> [Rect; 3] {
         let footer_props = self.footer_props();
         let footer_hint_height = self
-            .custom_footer_height()
+            .custom_footer_height(area.width)
             .unwrap_or_else(|| footer_height(&footer_props));
         let footer_spacing = Self::footer_spacing(footer_hint_height);
         let footer_total_height = footer_hint_height + footer_spacing;
@@ -2578,13 +2580,20 @@ impl ChatComposer {
         }
     }
 
-    fn custom_footer_height(&self) -> Option<u16> {
+    fn custom_footer_height(&self, width: u16) -> Option<u16> {
         if self.footer_flash_visible() {
             return Some(1);
         }
-        self.footer_hint_override
-            .as_ref()
-            .map(|items| if items.is_empty() { 0 } else { 1 })
+        if let Some(items) = self.footer_hint_override.as_ref() {
+            return Some(if items.is_empty() { 0 } else { 1 });
+        }
+        if self.footer_summary_visible {
+            return None;
+        }
+        let line = self.dynamic_status_line.as_ref()?;
+        let available_width = width.saturating_sub(FOOTER_INDENT_COLS as u16).max(1) as usize;
+        let wrapped = word_wrap_lines([line], available_width);
+        Some(wrapped.len().max(1) as u16)
     }
 
     fn sync_popups(&mut self) {
@@ -3109,7 +3118,7 @@ impl Renderable for ChatComposer {
     fn desired_height(&self, width: u16) -> u16 {
         let footer_props = self.footer_props();
         let footer_hint_height = self
-            .custom_footer_height()
+            .custom_footer_height(width)
             .unwrap_or_else(|| footer_height(&footer_props));
         let footer_spacing = Self::footer_spacing(footer_hint_height);
         let footer_total_height = footer_hint_height + footer_spacing;
@@ -3171,7 +3180,7 @@ impl ChatComposer {
                     footer_props.context_window_percent,
                     footer_props.context_window_used_tokens,
                 );
-                let custom_height = self.custom_footer_height();
+                let custom_height = self.custom_footer_height(popup_rect.width);
                 let footer_hint_height =
                     custom_height.unwrap_or_else(|| footer_height(&footer_props));
                 let footer_spacing = Self::footer_spacing(footer_hint_height);
@@ -3245,6 +3254,8 @@ impl ChatComposer {
                     } else {
                         compact
                     }
+                } else if !self.footer_summary_visible {
+                    None
                 } else {
                     Some(context_line.clone())
                 };
@@ -3339,7 +3350,15 @@ impl ChatComposer {
                             }
                         }
                         SummaryLeft::Custom(line) => {
-                            render_footer_line(hint_rect, buf, line);
+                            if self.footer_summary_visible {
+                                render_footer_line(hint_rect, buf, line);
+                            } else {
+                                render_footer_lines(
+                                    hint_rect,
+                                    buf,
+                                    word_wrap_lines([line], available_width.max(1)),
+                                );
+                            }
                         }
                         SummaryLeft::None => {}
                     }

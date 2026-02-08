@@ -44,6 +44,7 @@ use codex_chatgpt::connectors;
 use codex_core::config::Config;
 use codex_core::config::ConstraintResult;
 use codex_core::config::types::Notifications;
+use codex_core::config::types::StatusLineCommand;
 use codex_core::config_loader::ConfigLayerStackOrdering;
 use codex_core::features::FEATURES;
 use codex_core::features::Feature;
@@ -841,6 +842,7 @@ impl ChatWidget {
     /// a session id exists or before branch lookup completes), those items are skipped without
     /// placeholders so the line remains compact and stable.
     pub(crate) fn refresh_status_line(&mut self) {
+        self.maybe_promote_status_line_command();
         let (items, invalid_items) = self.status_line_items_with_invalids();
         if self.thread_id.is_some()
             && !invalid_items.is_empty()
@@ -4114,6 +4116,82 @@ impl ChatWidget {
         (items, invalid)
     }
 
+    fn maybe_promote_status_line_command(&mut self) {
+        if self.status_line_manager.is_some() || self.config.tui_status_line_command.is_some() {
+            return;
+        }
+        let Some(items) = self.config.tui_status_line.as_ref() else {
+            return;
+        };
+        if items.is_empty() {
+            return;
+        }
+        let (parsed_items, invalid_items) = self.status_line_items_with_invalids();
+        if !parsed_items.is_empty() || invalid_items.is_empty() {
+            return;
+        }
+        if !Self::status_line_items_look_like_command(items) {
+            return;
+        }
+        let Some(settings) = StatusLineCommand::Command(items.clone()).resolve() else {
+            return;
+        };
+        self.status_line_manager = Some(StatusLineManager::new(
+            settings.clone(),
+            self.app_event_tx.clone(),
+            self.config.cwd.clone(),
+        ));
+        self.bottom_pane.set_footer_summary_visible(false);
+        self.config.tui_status_line_command = Some(settings);
+        self.config.tui_status_line = None;
+        self.bottom_pane.set_status_line_enabled(false);
+        self.on_warning(
+            "`tui.status_line` looks like a command. Interpreting it as `tui.status_line_command`; update your config to silence this warning.",
+        );
+    }
+
+    fn status_line_items_look_like_command(items: &[String]) -> bool {
+        let Some(first) = items.first() else {
+            return false;
+        };
+        let first = first.trim();
+        if first.is_empty() {
+            return false;
+        }
+        let first_lower = first.to_ascii_lowercase();
+        if matches!(
+            first_lower.as_str(),
+            "bash"
+                | "sh"
+                | "zsh"
+                | "fish"
+                | "nu"
+                | "pwsh"
+                | "powershell"
+                | "cmd"
+                | "cmd.exe"
+                | "powershell.exe"
+                | "pwsh.exe"
+        ) {
+            return true;
+        }
+        items.iter().any(|item| {
+            let trimmed = item.trim();
+            if trimmed.starts_with('-') || trimmed.contains('/') || trimmed.contains('\\') {
+                return true;
+            }
+            let lower = trimmed.to_ascii_lowercase();
+            lower.ends_with(".sh")
+                || lower.ends_with(".ps1")
+                || lower.ends_with(".bat")
+                || lower.ends_with(".cmd")
+                || lower.ends_with(".exe")
+                || lower.ends_with(".py")
+                || lower.ends_with(".rb")
+                || lower.ends_with(".pl")
+        })
+    }
+
     fn status_line_cwd(&self) -> &Path {
         self.current_cwd.as_ref().unwrap_or(&self.config.cwd)
     }
@@ -6755,6 +6833,7 @@ impl ChatWidget {
     }
 
     fn update_status_line(&mut self) {
+        self.maybe_promote_status_line_command();
         let Some(manager) = self.status_line_manager.as_ref() else {
             return;
         };
@@ -6779,11 +6858,13 @@ impl ChatWidget {
             .effective_reasoning_effort()
             .or(self.config.model_reasoning_effort)
             .or(self.status_line_default_reasoning_effort(model_id.as_str()));
+        let mode_kind = self.active_mode_kind();
         let context_window = self.status_line_context_window();
 
         StatusLineInput::for_codex(StatusLineInputArgs {
             session_id,
             transcript_path,
+            mode_kind,
             cwd,
             project_dir,
             model_id,
